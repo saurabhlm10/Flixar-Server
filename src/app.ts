@@ -5,6 +5,8 @@ import cors from "cors";
 import morgan from "morgan";
 import path from "path";
 import { ENV } from "./constants";
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import s3Client from "./config/s3Client.config";
 
 const upload = multer({ dest: "uploads/" });
 const app = express();
@@ -41,42 +43,31 @@ const mergeChunks = async (
 };
 
 app.post("/api/upload/chunk", upload.single("chunk"), async (req, res) => {
-  const { chunkId, totalChunks, fileId } = req.body;
-  const chunkPath = req.file?.path;
-  const uploadDir = path.join(__dirname, "uploads", fileId);
+  const { chunkId, fileId } = req.body;
+  const file = req.file;
 
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+  if (!file) {
+    res.status(400).send({ message: "No file received" });
+    return;
   }
 
-  if (chunkPath) {
-    const chunkFileName = path.join(uploadDir, `chunk-${chunkId}`);
-    fs.renameSync(chunkPath, chunkFileName);
-  } else {
-    return res.status(400).send("No chunk file received.");
-  }
+  const params = {
+    Bucket: ENV.S3_BUCKET_NAME, // Your S3 Bucket name
+    Key: `${fileId}/chunk-${chunkId}`,
+    Body: fs.createReadStream(file.path),
+  };
 
-  // Check if all chunks are uploaded by comparing the number of files in the directory
-  const uploadedChunks = fs
-    .readdirSync(uploadDir)
-    .filter((file) => file.startsWith("chunk-")).length;
-  if (uploadedChunks === parseInt(totalChunks)) {
-    // All chunks are uploaded, proceed to merge
-    const chunks = Array.from({ length: uploadedChunks }, (_, index) =>
-      path.join(uploadDir, `chunk-${index}`)
-    );
+  const command = new PutObjectCommand(params);
 
-    const destination = path.join(__dirname, "uploads", `${fileId}.mp4`);
-    try {
-      await mergeChunks(chunks, destination, uploadedChunks);
-      fs.rmSync(uploadDir, { recursive: true, force: true }); // Ensure cleanup
-      res.send({ message: "File uploaded and merged successfully." });
-    } catch (error) {
-      console.error("Error merging chunks:", error);
-      res.status(500).send("Error merging file chunks.");
-    }
-  } else {
+  try {
+    // Send the command to S3
+    await s3Client.send(command);
+    // Optionally delete the local chunk file after successful upload to S3
+    fs.unlinkSync(file.path);
     res.send({ message: "Chunk uploaded successfully." });
+  } catch (err) {
+    console.error("Error uploading chunk to S3:", err);
+    res.status(500).send("Failed to upload chunk.");
   }
 });
 
