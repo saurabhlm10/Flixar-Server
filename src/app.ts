@@ -100,4 +100,39 @@ app.get("/api/upload/progress/:fileId", (req, res) => {
   res.json({ uploadedChunks });
 });
 
+app.get("/api/empty-uploads-directory", (req, res) => {
+  const uploadsDir = path.join(__dirname, "uploads");
+
+  fs.readdir(uploadsDir, (err, files) => {
+    if (err) {
+      console.error("Failed to list directory contents:", err);
+      return res.status(500).send("Failed to empty uploads directory.");
+    }
+
+    files.forEach((file) => {
+      const filePath = path.join(uploadsDir, file);
+      fs.stat(filePath, (err, stat) => {
+        if (err) {
+          console.error("Failed to stat file:", err);
+          return;
+        }
+
+        if (stat.isDirectory()) {
+          // Recursively delete directories
+          fs.rmdir(filePath, { recursive: true }, (err) => {
+            if (err) console.error("Failed to remove directory:", err);
+          });
+        } else {
+          // Delete files
+          fs.unlink(filePath, (err) => {
+            if (err) console.error("Failed to delete file:", err);
+          });
+        }
+      });
+    });
+
+    res.send("Uploads directory emptied");
+  });
+});
+
 export default app;
