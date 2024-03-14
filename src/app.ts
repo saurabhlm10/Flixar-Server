@@ -5,7 +5,11 @@ import cors from "cors";
 import morgan from "morgan";
 import path from "path";
 import { ENV } from "./constants";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+} from "@aws-sdk/client-s3";
 import s3Client from "./config/s3Client.config";
 import { awsConfig } from "./config/aws.config";
 awsConfig();
@@ -49,35 +53,90 @@ const mergeChunks = async (
   writeStream.end();
 };
 
+app.post("/api/upload/initiate", async (req: Request, res: Response) => {
+  const { fileId } = req.body;
+
+  const createMultipartUploadCommand = new CreateMultipartUploadCommand({
+    Bucket: ENV.S3_BUCKET_NAME,
+    Key: `${fileId}.mp4`,
+  });
+
+  try {
+    const { UploadId } = await s3Client.send(createMultipartUploadCommand);
+    res.send({ UploadId });
+  } catch (err) {
+    console.error("Error initiating upload to S3:", err);
+    res.status(500).send("Failed to initiate upload.");
+  }
+});
+
 app.post("/api/upload/chunk", upload.single("chunk"), async (req, res) => {
-  const { chunkId, fileId } = req.body;
+  const { chunkId, fileId, uploadId } = req.body;
+
   const file = req.file;
+
+  console.log("file?.size", file?.size);
 
   if (!file) {
     res.status(400).send({ message: "No file received" });
     return;
   }
 
+  // Check if the chunk is empty
+  if (file.size === 0) {
+    res.status(400).send({ message: "Empty chunk received" });
+    return;
+  }
+
   const params = {
     Bucket: ENV.S3_BUCKET_NAME, // Your S3 Bucket name
-    Key: `${fileId}/chunk-${chunkId}`,
+    Key: `${fileId}.mp4`,
+    PartNumber: chunkId,
+    UploadId: uploadId,
     Body: fs.createReadStream(file.path),
   };
 
-  const command = new PutObjectCommand(params);
+  const command = new UploadPartCommand(params);
 
   try {
     // Send the command to S3
-    await s3Client.send(command);
-    // Optionally delete the local chunk file after successful upload to S3
+    const { ETag } = await s3Client.send(command);
     fs.unlinkSync(file.path);
-    res.send({ message: "Chunk uploaded successfully." });
+    res.send({
+      message: "Chunk uploaded successfully.",
+      ETag,
+    });
   } catch (err) {
     console.error("Error uploading chunk to S3:", err);
     res.status(500).send("Failed to upload chunk.");
   }
 });
 
+app.post("/api/upload/merge", async (req: Request, res: Response) => {
+  const { fileId, uploadId, etags } = req.body;
+
+  if (etags.length === 0) {
+    return res.status(400).send("No chunks to merge");
+  }
+
+  // Complete the multipart upload
+  const completeMultipartUploadCommand = new CompleteMultipartUploadCommand({
+    Bucket: ENV.S3_BUCKET_NAME,
+    Key: `${fileId}.mp4`,
+    UploadId: uploadId,
+    MultipartUpload: {
+      Parts: etags,
+    },
+  });
+
+  try {
+    await s3Client.send(completeMultipartUploadCommand);
+    res.send({ message: "File merged successfully." });
+  } catch (err) {
+    console.error("Error merging file:", err);
+    res.status(500).send("Failed to merge file.");
+  }
+});
 // Endpoint to query the progress of an upload
 app.get("/api/upload/progress/:fileId", (req, res) => {
   const { fileId } = req.params;
@@ -99,7 +158,10 @@ app.get("/api/upload/progress/:fileId", (req, res) => {
 });
 
 app.get("/api/empty-uploads-directory", (req, res) => {
-  const uploadsDir = path.join(__dirname, "uploads");
+  const uploadsDir =
+    ENV.env === "dev"
+      ? path.join(__dirname, "../uploads")
+      : path.join(__dirname, "uploads");
 
   fs.readdir(uploadsDir, (err, files) => {
     if (err) {
@@ -145,8 +207,6 @@ app.post("/api/send-otp", async (req: Request, res: Response) => {
   try {
     const { phoneNumber } = req.body;
 
-    console.log("Sending OTP to:", phoneNumber);
-
     const response = await sendOtp(phoneNumber);
 
     // const response = await sendSNS(phoneNumber);
@@ -160,8 +220,6 @@ app.post("/api/send-otp", async (req: Request, res: Response) => {
 app.post("/api/verify-otp", async (req: Request, res: Response) => {
   try {
     const { phoneNumber, code, session } = req.body;
-
-    console.log(req.body);
 
     const response = await verifyOtp(phoneNumber, code, session);
     res.json(response);
