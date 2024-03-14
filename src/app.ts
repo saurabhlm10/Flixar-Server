@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response } from "express";
 import multer from "multer";
 import fs from "fs";
 import cors from "cors";
@@ -7,6 +7,13 @@ import path from "path";
 import { ENV } from "./constants";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import s3Client from "./config/s3Client.config";
+import { awsConfig } from "./config/aws.config";
+awsConfig();
+
+import AWS from "aws-sdk";
+const sns = new AWS.SNS();
+
+import { sendOtp, verifyOtp } from "./cognitoService";
 
 const upload = multer({ dest: "uploads/" });
 const app = express();
@@ -124,6 +131,43 @@ app.get("/api/empty-uploads-directory", (req, res) => {
 
     res.send("Uploads directory emptied");
   });
+});
+
+async function sendSNS(phoneNumber: string) {
+  const params = {
+    Message: `Hello fron Nodejs SNS 2`,
+    PhoneNumber: phoneNumber,
+  };
+  return sns.publish(params).promise();
+}
+
+app.post("/api/send-otp", async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber } = req.body;
+
+    console.log("Sending OTP to:", phoneNumber);
+
+    const response = await sendOtp(phoneNumber);
+
+    // const response = await sendSNS(phoneNumber);
+
+    res.json(response);
+  } catch (error: any) {
+    res.status(500).send(error.toString());
+  }
+});
+
+app.post("/api/verify-otp", async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber, code, session } = req.body;
+
+    console.log(req.body);
+
+    const response = await verifyOtp(phoneNumber, code, session);
+    res.json(response);
+  } catch (error: any) {
+    res.status(500).send(error.toString());
+  }
 });
 
 export default app;
