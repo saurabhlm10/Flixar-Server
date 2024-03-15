@@ -53,6 +53,44 @@ const mergeChunks = async (
   writeStream.end();
 };
 
+// Define the SSEConnections interface
+interface SSEConnections {
+  [uploadId: string]: (data: any) => void;
+}
+
+// Declare the sseConnections object on the global object
+declare global {
+  var sseConnections: SSEConnections;
+}
+
+// Initialize sseConnections
+global.sseConnections = global.sseConnections || {};
+
+app.get("/api/progress/:uploadId", (req, res) => {
+  const { uploadId } = req.params;
+
+  // Set headers for SSE
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const sendProgressUpdate = (data: any) => {
+    console.log("event sent");
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Store the sendProgressUpdate function using uploadId as key
+  global.sseConnections[uploadId] = sendProgressUpdate;
+
+  // Remove the connection when client closes the connection
+  req.on("close", () => {
+    delete global.sseConnections[uploadId];
+  });
+});
+
+// ... rest of your code
 app.post("/api/upload/initiate", async (req: Request, res: Response) => {
   const { fileId } = req.body;
 
@@ -70,12 +108,33 @@ app.post("/api/upload/initiate", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/progress/:uploadId", (req, res) => {
+  const { uploadId } = req.params;
+
+  // Set headers for SSE
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const sendProgressUpdate = (data: any) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Store the sendProgressUpdate function using uploadId as key
+  global.sseConnections[uploadId] = sendProgressUpdate;
+
+  // Remove the connection when client closes the connection
+  req.on("close", () => {
+    delete global.sseConnections[uploadId];
+  });
+});
+
 app.post("/api/upload/chunk", upload.single("chunk"), async (req, res) => {
   const { chunkId, fileId, uploadId } = req.body;
 
   const file = req.file;
-
-  console.log("file?.size", file?.size);
 
   if (!file) {
     res.status(400).send({ message: "No file received" });
@@ -101,10 +160,22 @@ app.post("/api/upload/chunk", upload.single("chunk"), async (req, res) => {
   try {
     // Send the command to S3
     const { ETag } = await s3Client.send(command);
-    fs.unlinkSync(file.path);
+
     res.send({
       message: "Chunk uploaded successfully.",
       ETag,
+    });
+    // Send a progress update if there's a connection for this uploadId
+    if (global.sseConnections[uploadId]) {
+      const progressData = {
+        chunkId,
+        progress: "Some progress value or message",
+      };
+      global.sseConnections[uploadId](progressData);
+    }
+
+    fs.unlink(file.path, () => {
+      console.log("unlinked");
     });
   } catch (err) {
     console.error("Error uploading chunk to S3:", err);
